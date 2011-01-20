@@ -1,8 +1,8 @@
+import Control.Monad
 import qualified Data.ByteString.Lazy as DBL
-import System.Environment
 import Text.Parsec
-import Text.Parsec.ByteString
-import Text.Parsec.Combinator
+import Text.Parsec.ByteString.Lazy
+import System.Environment
 
 import Knyaz.Directory
 
@@ -33,11 +33,11 @@ processFile :: FileInformation -> IO (Maybe [String])
 processFile information =
   catch (do markup <- DBL.readFile path
             putStrLn $ "Read " ++ show (DBL.length markup) ++ " bytes from " ++ path
-            case parse markup "domain" domainParser of
-              Left error -> do putStrLn $ "Parser error: " ++ show error
-                               return Nothing
-              Right strings -> do return $ Just strings
-            return Nothing)
+            let parserResult = parse domainParser "domain" markup
+            case parserResult of
+              Left parserError -> do putStrLn $ "Parser error: " ++ show parserError
+                                     return Nothing
+              Right strings -> do return $ Just strings)
         (\exception -> do putStrLn $ "Unable to read file " ++ path ++ ": " ++ show exception
                           return Nothing)
   where
@@ -45,7 +45,8 @@ processFile information =
 
 domainParser :: Parser [String]
 domainParser = do
-  return . many $ do
-    string "edit_domain_id="
-    many $ noneOf ">"
-    return . many $ noneOf "<"
+  many . try $ do
+    void $ manyTill anyChar $ try $ string "edit_domain_id="
+    void . many $ noneOf ">"
+    void $ string ">"
+    many $ noneOf "<"
