@@ -1,18 +1,56 @@
+import Control.Exception (Exception, throw)
 import Control.Monad
 import qualified Data.ByteString.Lazy as DBL
+import Data.Foldable (toList)
+import Data.Function
+import Data.List
+import qualified Data.Map as DM
+import qualified Data.Sequence as DS
+import Data.Typeable
 import Text.Parsec
 import Text.Parsec.ByteString.Lazy
 import System.Environment
 
 import Knyaz.Directory
 
+type DomainAlgorithm = [String] -> String
+
+data DomainAlgorithmDescription = DomainAlgorithmDescription {
+  algorithmFunction :: DomainAlgorithm,
+  algorithmDescription :: String,
+  algorithmOutputPath :: FilePath
+  }
+
 main :: IO ()
 main = do
   arguments <- getArgs
-  if length arguments == 1
-    then do results <- processDirectory $ head arguments
-            return ()
-    else putStrLn "Invalid argument count"
+  if length arguments == length argumentDescriptions
+    then do let inputDirectory = head arguments
+                algorithm function description index = DomainAlgorithmDescription function description $ arguments !! index
+                algorithms = [
+                  algorithm domainsSortedByLength "domains sorted by length" 1,
+                  algorithm domainsSortedByTLDRarity "domains sorted by TLD rarity" 2
+                  ]
+            results <- processDirectory inputDirectory
+            case results of
+              Just domains -> mapM_ (processAlgorithm domains) algorithms
+              Nothing -> return ()
+    else do program <- getProgName
+            let description = [
+                  "Invalid argument count. Usage:",
+                  program ++ " " ++ argumentString
+                  ]
+            putStr $ unlines description
+  where
+    argumentDescriptions = [
+      "input directory which contains the HTML files",
+      "output path for the domains sorted by lenght",
+      "output path for the domains sorted by TLD rarity"
+      ]
+    argumentString = unwords $ map (\x -> "<" ++ x ++ ">") argumentDescriptions
+    processAlgorithm domains algorithm = do
+      let content = algorithmFunction algorithm $ domains
+      writeOutput (algorithmDescription algorithm) (algorithmOutputPath algorithm) content
 
 processDirectory :: FilePath -> IO (Maybe [String])
 processDirectory directory = do
@@ -50,3 +88,63 @@ domainParser = do
     void . many $ noneOf ">"
     void $ string ">"
     many $ noneOf "<"
+
+writeOutput :: String -> FilePath -> String -> IO ()
+writeOutput description path content =
+  catch (do writeFile path content
+            putStrLn $ "Output of " ++ outputDescription ++ " has been written to " ++ path)
+        (\exception -> putStrLn $ "Failed to write the output of " ++ outputDescription ++ " to " ++ path ++ ": " ++ show exception)
+  where
+    quotify text = "\"" ++ text ++ "\""
+    outputDescription = quotify description
+
+domainsSortedByLength :: DomainAlgorithm
+domainsSortedByLength domains =
+  let sortedDomains = sortBy domainSort domains in
+  unlines sortedDomains
+  where
+    domainSort x y =
+      let lengthComparison = on compare length x y in
+      case lengthComparison of
+        EQ -> compare x y
+        _ -> lengthComparison
+
+domainsSortedByTLDRarity :: DomainAlgorithm
+domainsSortedByTLDRarity domains =
+  output
+  where
+    tldMap = createTLDMap domains DM.empty
+    sortedTLDMap = DM.map DS.unstableSort tldMap
+    mapPairs = DM.assocs sortedTLDMap
+    pairSort = on compare $ DS.length . snd
+    sortedPairs = sortBy pairSort mapPairs
+    pairMap (tld, domainSequence) = tld ++ " (" ++ (show $ DS.length domainSequence) ++ " domain(s))\n" ++ (unlines $ toList domainSequence)
+    output = unlines $ map pairMap sortedPairs
+
+type DomainMap = DM.Map String (DS.Seq String)
+
+data DomainParserException = DomainParserException {
+  exceptionDomain :: String,
+  exceptionParserError :: ParseError
+  } deriving (Show, Typeable)
+
+instance Exception DomainParserException
+
+createTLDMap :: [String] -> DomainMap -> DomainMap
+createTLDMap [] map = map
+createTLDMap (domain : domains) map =
+  case parse tldParser "TLD" domain of
+    Right tld -> let newMap = DM.insertWith' DS.(><) tld (DS.singleton domain) map in
+      createTLDMap domains newMap
+    Left error -> throw $ DomainParserException domain error
+
+tldParser :: Parsec String () String
+tldParser =
+  try (do
+    void $ char '.'
+    tld <- many1 lower
+    eof
+    return tld) <|>
+    (do
+       void $ anyChar
+       tldParser)
