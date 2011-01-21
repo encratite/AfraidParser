@@ -1,4 +1,4 @@
-import Control.Exception (Exception, throw)
+import qualified Control.Exception as CE
 import Control.Monad
 import qualified Data.ByteString.Lazy as DBL
 import Data.Foldable (toList)
@@ -50,7 +50,12 @@ main = do
     argumentString = unwords $ map (\x -> "<" ++ x ++ ">") argumentDescriptions
     processAlgorithm domains algorithm = do
       let content = algorithmFunction algorithm $ domains
-      writeOutput (algorithmDescription algorithm) (algorithmOutputPath algorithm) content
+      CE.catch (writeOutput (algorithmDescription algorithm) (algorithmOutputPath algorithm) content)
+               handleDomainException
+
+handleDomainException :: DomainParserException -> IO ()
+handleDomainException exception =
+  putStrLn $ "Domain parsing error in domain " ++ show (exceptionDomain exception) ++ ": " ++ show (exceptionParserError exception)
 
 processDirectory :: FilePath -> IO (Maybe [String])
 processDirectory directory = do
@@ -128,15 +133,15 @@ data DomainParserException = DomainParserException {
   exceptionParserError :: ParseError
   } deriving (Show, Typeable)
 
-instance Exception DomainParserException
+instance CE.Exception DomainParserException
 
 createTLDMap :: [String] -> DomainMap -> DomainMap
-createTLDMap [] map = map
-createTLDMap (domain : domains) map =
+createTLDMap [] tldMap = tldMap
+createTLDMap (domain : domains) tldMap =
   case parse tldParser "TLD" domain of
-    Right tld -> let newMap = DM.insertWith' DS.(><) tld (DS.singleton domain) map in
+    Right tld -> let newMap = DM.insertWith' (DS.><) tld (DS.singleton domain) tldMap in
       createTLDMap domains newMap
-    Left error -> throw $ DomainParserException domain error
+    Left parserError -> CE.throw $ DomainParserException domain parserError
 
 tldParser :: Parsec String () String
 tldParser =
