@@ -1,19 +1,12 @@
 import qualified Control.Exception as CE
-import Control.Monad
 import qualified Data.ByteString.Lazy as DBL
-import Data.Foldable (toList)
-import Data.Function
-import Data.List
-import qualified Data.Map as DM
-import qualified Data.Sequence as DS
-import Data.Typeable
 import Text.Parsec
-import Text.Parsec.ByteString.Lazy
 import System.Environment
 
 import Knyaz.Directory
 
-type DomainAlgorithm = [String] -> String
+import Algorithm
+import Parser
 
 data DomainAlgorithmDescription = DomainAlgorithmDescription {
   algorithmFunction :: DomainAlgorithm,
@@ -86,14 +79,6 @@ processFile information =
   where
     path = filePath information
 
-domainParser :: Parser [String]
-domainParser = do
-  many . try $ do
-    void $ manyTill anyChar $ try $ string "edit_domain_id="
-    void . many $ noneOf ">"
-    void $ string ">"
-    many $ noneOf "<"
-
 writeOutput :: String -> FilePath -> String -> IO ()
 writeOutput description path content =
   catch (do writeFile path content
@@ -102,54 +87,3 @@ writeOutput description path content =
   where
     quotify text = "\"" ++ text ++ "\""
     outputDescription = quotify description
-
-domainsSortedByLength :: DomainAlgorithm
-domainsSortedByLength domains =
-  let sortedDomains = sortBy domainSort domains in
-  unlines sortedDomains
-  where
-    domainSort x y =
-      let lengthComparison = on compare length x y in
-      case lengthComparison of
-        EQ -> compare x y
-        _ -> lengthComparison
-
-domainsSortedByTLDRarity :: DomainAlgorithm
-domainsSortedByTLDRarity domains =
-  output
-  where
-    tldMap = createTLDMap domains DM.empty
-    sortedTLDMap = DM.map DS.unstableSort tldMap
-    mapPairs = DM.assocs sortedTLDMap
-    pairSort = on compare $ DS.length . snd
-    sortedPairs = sortBy pairSort mapPairs
-    pairMap (tld, domainSequence) = tld ++ " (" ++ (show $ DS.length domainSequence) ++ " domain(s))\n" ++ (unlines $ toList domainSequence)
-    output = unlines $ map pairMap sortedPairs
-
-type DomainMap = DM.Map String (DS.Seq String)
-
-data DomainParserException = DomainParserException {
-  exceptionDomain :: String,
-  exceptionParserError :: ParseError
-  } deriving (Show, Typeable)
-
-instance CE.Exception DomainParserException
-
-createTLDMap :: [String] -> DomainMap -> DomainMap
-createTLDMap [] tldMap = tldMap
-createTLDMap (domain : domains) tldMap =
-  case parse tldParser "TLD" domain of
-    Right tld -> let newMap = DM.insertWith' (DS.><) tld (DS.singleton domain) tldMap in
-      createTLDMap domains newMap
-    Left parserError -> CE.throw $ DomainParserException domain parserError
-
-tldParser :: Parsec String () String
-tldParser =
-  try (do
-    void $ char '.'
-    tld <- many1 lower
-    eof
-    return tld) <|>
-    (do
-       void $ anyChar
-       tldParser)
